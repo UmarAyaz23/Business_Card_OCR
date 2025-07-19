@@ -1,13 +1,6 @@
 import pandas as pd
-import numpy as np
-from glob import glob
-import matplotlib.pyplot as plt
 
-from PIL import Image
 import cv2
-from pyzbar.pyzbar import decode
-import base64
-import easyocr
 from paddleocr import PaddleOCR
 
 import os
@@ -15,20 +8,16 @@ import re
 import json
 from dotenv import load_dotenv
 
-import groq
 from langchain_groq import ChatGroq
-from langchain_core.messages import HumanMessage, SystemMessage
 
 #--------------------------------------------------------------------------API INITIALIZATION--------------------------------------------------------------------------
 load_dotenv()
-LANCHAIN_API_KEY = os.getenv("LANGCHAIN_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-groq_client = groq.Groq(api_key = GROQ_API_KEY)
 
 
 #--------------------------------------------------------------------------IMAGE PROCESSING--------------------------------------------------------------------------
 def extract_img_data_paddleOCR(img_files, min_avg_confidence = 0.7):
-    ocr = PaddleOCR(use_angle_cls=True, lang='en', show_log=False)
+    ocr = PaddleOCR(use_angle_cls=True, lang='en')
     all_rows = []
 
     for img_path in img_files:
@@ -65,21 +54,6 @@ def extract_img_data_paddleOCR(img_files, min_avg_confidence = 0.7):
             all_rows.append(entry)
 
     return pd.DataFrame(all_rows)
-
-
-def decode_qr_code_pyzbar(img_path):
-    try:
-        image = Image.open(img_path)
-        qr_codes = decode(image)
-
-        if qr_codes:
-            qr_data = qr_codes[0].data.decode('utf-8').strip()
-            return qr_data if qr_data else "QR Code Present"
-        else:
-            return "Unavailable"
-    except Exception as e:
-        print(f"⚠️ QR decode error for {img_path}: {e}")
-        return "QR Code Present"
 
 
 def decode_qr_code_cv2(img_path):
@@ -125,12 +99,14 @@ def structure_data_LLM(text):
                 "Your response must always be a valid JSON object, formatted exactly as follows:"
                 "\n```json\n"
                 "{"
-                "\n  \"Company Name\": \"<string>\","
-                "\n  \"Full Name\": \"<string>\","
+                "\n  \"First Name\": \"<string>\","
+                "\n  \"Last Name\": \"<string>\","
                 "\n  \"Designation\": \"<string>\","
+                "\n  \"Company Name\": \"<string>\","
+                "\n  \"Email\": \"<string>\","
                 "\n  \"Contact Number\": \"<string>\","
                 "\n  \"Fax Number\": \"<string>\","
-                "\n  \"Email\": \"<string>\","
+                "\n  \"Industry\": \"<string>\","
                 "\n  \"Website\": \"<string>\","
                 "\n  \"Address\": <string>,"
                 "\n  \"Social Media Handle Name\": <string>,"
@@ -166,6 +142,44 @@ def get_value(data, keys, default="Unavailable"):
     return default
 
 
+def process_image_from_bytes(cv2_image):
+    import tempfile
+
+    # Save temporarily to pass path to PaddleOCR (it doesn't accept raw cv2 image)
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+        tmp_path = tmp.name
+        cv2.imwrite(tmp_path, cv2_image)
+
+    img_data = extract_img_data_paddleOCR([tmp_path], min_avg_confidence=0.5)
+
+    if img_data.empty or 'Image' not in img_data.columns or 'Text' not in img_data.columns:
+        return {}
+
+    grouped = img_data.groupby('Image').agg({
+        'Text': lambda x: ' '.join(x),
+        'QR_Code': 'first'
+    }).reset_index()
+
+    row = grouped.iloc[0]
+    ocr_text = row['Text']
+    extracted = structure_data_LLM(ocr_text)
+
+    return {
+        'First_Name': get_value(extracted, ['First Name', 'First_Name', 'FirstName']),
+        'Last_Name': get_value(extracted, ['Last Name', 'Last_Name', 'LastName']),
+        'Designation': get_value(extracted, ['Designation']),
+        'Company_Name': get_value(extracted, ['Company Name', 'Company_Name', 'CompanyName']),
+        'Email': get_value(extracted, ['Email']),
+        'Contact_Number': get_value(extracted, ['Contact Number', 'Contact_Number', 'ContactNumber']),
+        'Fax_Number': get_value(extracted, ['Fax Number', 'Fax_Number', 'FaxNumber']),
+        'Website': get_value(extracted, ['Website']),
+        'Address': get_value(extracted, ['Address']),
+        'Social_Media_Handle_Name': get_value(extracted, ['Social Media Handle Name', 'Social_Media_Handle_Name', 'SocialMediaHandleName']),
+        'QR_Code': row['QR_Code'],
+    }
+
+
+'''
 def process_all_images(output_file):
     upload_dir = 'uploads'
     img_files = glob(os.path.join(upload_dir, '*'))
@@ -199,12 +213,13 @@ def process_all_images(output_file):
 
         structured_rows.append({
             'Image': image_path,
-            'Company_Name': get_value(extracted, ['Company Name', 'Company_Name', 'CompanyName']),
-            'Full_Name': get_value(extracted, ['Full Name', 'Full_Name']),
+            'First_Name': get_value(extracted, ['First Name', 'First_Name', 'FirstName']),
+            'Last_Name': get_value(extracted, ['Last Name', 'Last_Name', 'LastName']),
             'Designation': get_value(extracted, ['Designation']),
+            'Company_Name': get_value(extracted, ['Company Name', 'Company_Name', 'CompanyName']),
+            'Email': get_value(extracted, ['Email']),
             'Contact_Number': get_value(extracted, ['Contact Number', 'Contact_Number', 'ContactNumber']),
             'Fax_Number': get_value(extracted, ['Fax Number', 'Fax_Number', 'FaxNumber']),
-            'Email': get_value(extracted, ['Email']),
             'Website': get_value(extracted, ['Website']),
             'Address': get_value(extracted, ['Address']),
             'Social_Media_Handle_Name': get_value(extracted, ['Social Media Handle Name', 'Social_Media_Handle_Name', 'SocialMediaHandleName']),
@@ -216,3 +231,4 @@ def process_all_images(output_file):
     print(f"✅ Excel updated at: {output_file}")
 
     return new_df
+'''
